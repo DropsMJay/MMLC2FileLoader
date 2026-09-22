@@ -4,7 +4,7 @@ A loose-file mod loader for **Mega Man Legacy Collection 2**. Drop a
 modified file into a `mods/` folder using the game's own internal path,
 and the loader transparently serves it instead of the content packed
 inside the game's `disc` archive — no repacking or editing the original
-archive required.
+archive required. Mostly made with Claude.ai
 
 > Built through reverse engineering of the game's resource-loading
 > functions with Ghidra and runtime hooks (MinHook). See
