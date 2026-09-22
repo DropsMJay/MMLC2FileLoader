@@ -18,7 +18,7 @@ archive required. Mostly made with Claude.ai
   picked up automatically.
 - **Covers most loadable content**: sprites and objects, stage data,
   menu/UI screens, fonts, localized text, and the art gallery — across
-  every game in the collection (MM7 through MM11), including MM8's
+  every game in the collection (MM7 through MM10), including MM8's
   legacy `.PAC` data.
 - **Safe fallback** — if no modded file is found for a given resource,
   the game reads from the original `disc` exactly as it always did.
