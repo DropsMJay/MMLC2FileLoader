@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="MMLC2FileLoader.vcxproj" Id="995fd108-f034-4a0a-a2ba-51a832385519" />
+</Solution>
