@@ -136,6 +136,78 @@ path via `FUN_140144a10("logo.lzs")` and calls `FUN_14012e260` directly
 — the same flow as the art gallery, but without going through the
 `%03d` template layer (since the name is already fixed).
 
+### 3.2 The `param_2 != nullptr` case: caller-provided buffers
+
+Not every caller of `FUN_14012df60` passes `nullptr` for `param_2`.
+Some pass a real destination buffer they already allocated. Two
+different allocation patterns were found behind this:
+
+- **`FUN_1402cfcc0`** (RVA `0x2cfcc0`, covers `rm10/bin/media/bin/*` —
+  `obj_dat.bin`, `obj_fnt.bin`, etc): a **bump/arena allocator**. A
+  shared pool (`DAT_140afd940`, an array of pointers) hands out the
+  next free slot for each of up to 12 resources in sequence; after each
+  read, the *next* slot's start address is recomputed as
+  `current_slot + round_up_32(actual_size_read)`. Since this recomputes
+  from whatever size the read reports, it's safe to report a **larger**
+  size than the original (the mod loader whitelists this caller's RVA,
+  `0x2cfe37`, to allow mods bigger than the original file).
+- **`FUN_1402cf9d0`** (RVA `0x2cfaf6`, covers `rm10/bin/media/sprite/*`):
+  a **reused scratch buffer** — confirmed by observing two different
+  sprite files (`s_f_x00_en.bin`, `s_f_x01_en.bin`) resolve to the exact
+  same destination address in the same session. This buffer has a real,
+  unknown fixed capacity; writing past it would corrupt memory.
+
+**Mod loader's policy for this case:** let the original function run
+first (it always knows how to read correctly into that exact buffer,
+and reports the real size used via `*param_3`). Only overwrite with a
+mod if it's the same size or smaller — or, for whitelisted caller RVAs
+confirmed to use the safe bump-arena pattern, any size. This is
+universally safe regardless of which allocation pattern is behind a
+given buffer, without needing to know its true capacity.
+
+---
+
+## 3.5. The shared low-level reader: `FUN_14000a910`
+
+**Hooked function:** `FUN_14000a910` — RVA `0xa910`
+
+**Signature** (derived directly from Ghidra's analysis of the function
+body, x64 `__fastcall`):
+`longlong FUN_14000a910(undefined8 param_1, undefined8 param_2, longlong param_3, int *param_4)`
+- `param_1`: unused within the function body (context/reserved)
+- `param_2`: resource path (same `"DISC::..."` string built by callers)
+- `param_3`: destination buffer, or `0` to auto-allocate
+- `param_4`: output size pointer (`int*`), can be `nullptr`
+
+Both `FUN_14021de90` (System 1) and `FUN_14012df60` (System 2) call
+this internally for the actual pack read — confirmed via
+`References → Show References to Address`, which listed exactly these
+two callers, plus two more inside a per-room "clone" of
+`FUN_14021de90`'s pattern (`FUN_1402cfeb0`, discovered while
+investigating audio — see §4.1). Every other resource-loading path
+found so far (including MM7's `rm07/*` objects and MM10's `bin/*` and
+`sprite/*` families) ultimately funnels through here too, one level
+below the two named systems.
+
+**Why hook it too:** it's a safety net. Any resource reached through a
+caller this loader hasn't identified and hooked directly (like the
+per-room clones) still passes through this single common function,
+letting the mod loader catch it without needing to find and hook every
+clone individually. Uses the same dual-mode redirect logic as System 2
+(§3.2): auto-allocate when `param_3 == 0`, buffered-safe-size check
+otherwise (no growth whitelist for this hook yet, since its own callers
+haven't been individually vetted the way `FUN_1402cfcc0` was).
+
+**Allocator note:** when `param_3 == 0`, the original function
+allocates via `thunk_FUN_1403f4158(&DAT_1407f1120)`, a **different**
+allocator than `FUN_14013a3a0` used elsewhere. Freed later via
+`FUN_14013a5e0` regardless of origin, which is the same deallocator
+paired with `FUN_14013a3a0` — suggesting the two allocators are
+compatible (likely the same underlying implementation reached through
+different call sites), though this was not independently confirmed.
+The mod loader's hook reuses `FUN_14013a3a0`/`g_engineAlloc` for
+consistency with the rest of the codebase; no issues were observed.
+
 ---
 
 ## 4. System 3: Audio (`.xwb` wave banks)
@@ -153,11 +225,44 @@ initially suspected.
 
 **Important:** this function **does not read any bytes on the spot** —
 it only registers the request in a cache/slot (`FUN_140140100` checks
-an existing cache, `FUN_140140280` allocates a new slot). The whole
-`.xwb` (multiple tracks) is read at once whenever needed; `id` indexes
-the track inside the already-loaded wave bank. **Where the actual disk
-read happens was not mapped** — this isn't redirectable in the mod
-loader yet (only cataloged).
+an existing cache, `FUN_140140280` allocates a new slot, both against a
+32-slot array at `DAT_14093acc0`).
+
+### 4.1 Investigation: where the actual read happens (inconclusive)
+
+Extensive dynamic probing failed to find a name-based entry point for
+individual `.xwb` files, ruling out every plausible Windows I/O API one
+by one:
+
+- **`CreateFileA`/`CreateFileW`** filtered on `.xwb` — never fires.
+- **`CreateFileMappingA`/`MapViewOfFile`** — logged unconditionally
+  during an audio-heavy session, never fires either.
+- **`ReadFile`/`SetFilePointerEx` on the disc's own file handle**
+  (captured once at boot via the `"./disc"` `CreateFileA` call) —
+  fires constantly, but only from **two** call sites for the entire
+  session, neither audio-specific:
+  - RVA `0xDDE2`: thousands of 1-byte reads — the ZIP central
+    directory parser (matches filenames byte by byte).
+  - RVA `0xDD42`: ~12,000 chunked reads (up to 16 KB each, ~120 MB
+    total) — the generic buffered zlib/deflate decompression reader,
+    shared by every resource type, not audio-specific.
+
+Following the call chain one level up from `FUN_140140030` didn't reach
+a file read either:
+```
+FUN_140140030 → FUN_140140100 (cache check) / FUN_140140280 (slot alloc)
+FUN_1402cfeb0 (a per-room "clone" of FUN_14021de90, e.g. for rm10/bin)
+  → FUN_1403899a0 (reads a 4-byte header from FUN_1402cfeb0's result,
+     delegates to FUN_1402cfb40 - not traced further)
+```
+
+**Conclusion:** wave bank data is very likely resolved through an
+in-memory index/offset table built once at boot (from the ZIP central
+directory already parsed for the `"./disc"` handle), rather than through
+any of the name-based resolvers this loader hooks. Redirecting audio
+would require locating and hooking that index structure directly (or
+patching the zip's central directory in memory), which is a
+substantially different — and unexplored — approach. **Not implemented.**
 
 ---
 
@@ -214,6 +319,12 @@ the legacy file names/format as a data container.
 | `0x23070` | `FUN_140023070` | Equivalent to `FUN_140022e50` for rc10 |
 | `0x3f870` | `FUN_14003f870` | Museum UI controller (game switching) |
 | `0x4bfb0` | `FUN_14004bfb0` | Loads `logo.lzs` at boot |
+| `0xa910` | `FUN_14000a910` | Shared low-level pack read, common to Systems 1 and 2 (§3.5) |
+| `0x100590` | `FUN_140010590` | ZIP lookup/decompress dispatcher, called by `FUN_14000a910` |
+| `0x2cfcc0` | `FUN_1402cfcc0` | `rm10/bin/media/bin/*` bump-arena buffered loader (§3.2) |
+| `0x2cfaf6`/`0x2cf9d0` | `FUN_1402cf9d0` | `rm10/bin/media/sprite/*` reused scratch-buffer loader (§3.2) |
+| `0x2cfeb0` | `FUN_1402cfeb0` | Per-room clone of `FUN_14021de90`'s pattern for `rm10/bin/media/bin/` (found during audio investigation, §4.1) |
+| `0x3899a0` | `FUN_1403899a0` | Reads a 4-byte header from `FUN_1402cfeb0`'s result, delegates onward (audio-adjacent, not fully traced) |
 
 ---
 
@@ -232,3 +343,11 @@ the legacy file names/format as a data container.
 - **Build marker in the log** (`BUILD_MARKER=...`) to confirm the
   latest compiled version was actually running in the game, after a
   few cases of stale builds being tested by mistake.
+- **Capturing a specific handle at open time and filtering subsequent
+  API calls by it** — used during the audio investigation (§4.1): the
+  `disc`'s `HANDLE` was captured from its one-time `CreateFileA` call,
+  then every `ReadFile`/`SetFilePointerEx` call elsewhere in the
+  process was logged only when it matched that exact handle. This
+  isolated disc-related I/O from the rest of the process's file
+  activity, though in this case it led to a dead end (only two shared,
+  non-audio-specific call sites were found).
