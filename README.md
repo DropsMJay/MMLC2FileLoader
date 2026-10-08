@@ -17,9 +17,9 @@ archive required.
   Just mirror the internal path under `mods/` and the modded file is
   picked up automatically.
 - **Covers most loadable content**: sprites and objects, stage data,
-  menu/UI screens, fonts, localized text, and the art gallery — across
-  every game in the collection (MM7 through MM11), including MM8's
-  legacy `.PAC` data.
+  menu/UI screens, fonts, localized text, the art gallery, and music/
+  sound wave banks — across every game in the collection (MM7 through
+  MM11), including MM8's legacy `.PAC` data.
 - **Safe fallback** — if no modded file is found for a given resource,
   the game reads from the original `disc` exactly as it always did.
   Nothing is modified on disk.
@@ -66,6 +66,11 @@ mods/illust/muse_rc7_002.lzs
 Example — replacing the opening logo:
 ```
 mods/menu/JP/logo.lzs
+```
+
+Example — replacing a music track (MM8):
+```
+mods/rm08/DATA/sounds/BGM02.xwb
 ```
 
 ## Configuration
@@ -120,11 +125,14 @@ The game has two independent systems for loading resources from its
   legacy PS1-era container formats.
 
 Both are intercepted with inline hooks, plus a lower-level hook on the
-shared pack-read function they both eventually call, as a safety net
-for resources reached through per-room "clone" functions. When a
-matching file exists under `mods/`, its contents are served in place of
-the original; otherwise the original code path runs unmodified. Full
-details, including every mapped function address, are in
+shared pack-read function they both eventually call. That last hook
+is what makes text, font and UI files (`m_*.bin`, `font_jp.bin`, ...)
+moddable, since the first system only sees a short file name. Music and
+sound wave banks (`.xwb`) go through `ResolveGeneric` as well, with no
+extra code needed. When a matching file exists under `mods/`, its
+contents are served in place of the original; otherwise the original
+code path runs unmodified. Full details, including every mapped
+function address, are in
 [`REVERSE_ENGINEERING.md`](REVERSE_ENGINEERING.md).
 
 ## Known limitations
@@ -132,13 +140,10 @@ details, including every mapped function address, are in
 - **Larger buffered mods** — some resources are read into a buffer the
   game already allocated. The loader always allows a same-size-or-
   smaller mod there; growing past the original size is only allowed for
-  a short whitelist of call sites known to use a growable memory arena.
-- **Audio (`.xwb` wave banks) isn't moddable.** Despite testing several
-  Windows file-I/O APIs and tracing every read on the disc's file
-  handle, no name-based entry point for individual audio files was
-  found — see [`REVERSE_ENGINEERING.md`](REVERSE_ENGINEERING.md) for
-  the investigation notes.
-- **Video/cutscenes aren't moddable** — also documented in
+  a short whitelist of call sites known to use a growable memory arena,
+  and for text/UI files read into the game's fixed resource buffer
+  (up to 4 MiB).
+- **Video/cutscenes aren't moddable** — documented in
   [`REVERSE_ENGINEERING.md`](REVERSE_ENGINEERING.md).
 
 ## Disclaimer
