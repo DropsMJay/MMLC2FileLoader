@@ -4,7 +4,7 @@ A loose-file mod loader for **Mega Man Legacy Collection 2**. Drop a
 modified file into a `mods/` folder using the game's own internal path,
 and the loader transparently serves it instead of the content packed
 inside the game's `disc` archive — no repacking or editing the original
-archive required. Made with the help of Claude.Ai
+archive required.
 
 > Built through reverse engineering of the game's resource-loading
 > functions with Ghidra and runtime hooks (MinHook). See
@@ -145,6 +145,15 @@ function address, are in
   (up to 4 MiB).
 - **Video/cutscenes aren't moddable** — documented in
   [`REVERSE_ENGINEERING.md`](REVERSE_ENGINEERING.md).
+
+## AI assistance
+
+This project was built with **Claude** (Anthropic), through **Claude.ai**.
+The reverse engineering was done in Ghidra on the author's side; Claude
+helped analyze the decompiled functions, write the hooks and tooling, and
+draft this documentation. All behavior described here was tested in the
+game by the author, and anything that was only confirmed through the log
+(not in-game) is marked as such.
 
 ## Disclaimer
 
