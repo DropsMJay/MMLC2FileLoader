@@ -189,14 +189,28 @@ found so far (including MM7's `rm07/*` objects and MM10's `bin/*` and
 `sprite/*` families) ultimately funnels through here too, one level
 below the two named systems.
 
-**Why hook it too:** it's a safety net. Any resource reached through a
-caller this loader hasn't identified and hooked directly (like the
-per-room clones) still passes through this single common function,
-letting the mod loader catch it without needing to find and hook every
-clone individually. Uses the same dual-mode redirect logic as System 2
-(§3.2): auto-allocate when `param_3 == 0`, buffered-safe-size check
-otherwise (no growth whitelist for this hook yet, since its own callers
-haven't been individually vetted the way `FUN_1402cfcc0` was).
+**Why hook it:** it is required for System 1. `FUN_14021de90` only
+receives a short name (`m_shop_en.bin`); the full path
+(`rm09/game/media/bin/m_shop_en.bin`) is built from one of six base
+directories and first appears here. Any other resource reached through a
+caller this loader hasn't hooked directly (like the per-room clones) also
+passes through this function. Redirect logic: auto-allocate when
+`param_3 == 0`; otherwise the original read runs first and the mod is
+copied over the destination buffer.
+
+**In-game verified:** when called from `FUN_14021de90` (caller RVA
+`0x21e0b0`), `param_3` is exactly the fixed buffer
+`DAT_1409ca7e8 + 0x629000` and `*param_4` becomes the size that
+`FUN_14021de90` returns, so overwriting both is equivalent to the
+original read. A translated `m_shop_en.bin` showed correctly in the shop.
+Growth: allowed up to 4 MiB when `param_3` is the fixed buffer. The base
+block `DAT_1409ca7e8` is allocated and zeroed in `FUN_14021c850` with
+size `0x1600000` (22 MiB), so at most `0xFD7000` (~15.8 MiB) remain after
+offset `0x629000`; the 4 MiB cap is conservative because other sub-buffers
+inside the block have not been ruled out, otherwise the mod must not exceed
+the original size, and a skipped mod is logged as `[FAIL] ... skipped`.
+For `ResolveGeneric` callers (caller RVA `0x12dfb6`) the outer
+`[OK-BUFFERED]` step runs after this one and decides the final size.
 
 **Allocator note:** when `param_3 == 0`, the original function
 allocates via `thunk_FUN_1403f4158(&DAT_1407f1120)`, a **different**
@@ -228,27 +242,23 @@ it only registers the request in a cache/slot (`FUN_140140100` checks
 an existing cache, `FUN_140140280` allocates a new slot, both against a
 32-slot array at `DAT_14093acc0`).
 
-### 4.1 Investigation: where the actual read happens (inconclusive)
+### 4.1 Investigation: where the actual read happens
 
-Extensive dynamic probing failed to find a name-based entry point for
-individual `.xwb` files, ruling out every plausible Windows I/O API one
-by one:
+Initial dynamic probing seemed to rule out every plausible Windows I/O
+API for individual `.xwb` files:
 
-- **`CreateFileA`/`CreateFileW`** filtered on `.xwb` — never fires.
+- **`CreateFileA`/`CreateFileW`** filtered on `.xwb` — never fired.
 - **`CreateFileMappingA`/`MapViewOfFile`** — logged unconditionally
-  during an audio-heavy session, never fires either.
+  during an audio-heavy session, never fired either.
 - **`ReadFile`/`SetFilePointerEx` on the disc's own file handle**
   (captured once at boot via the `"./disc"` `CreateFileA` call) —
-  fires constantly, but only from **two** call sites for the entire
-  session, neither audio-specific:
-  - RVA `0xDDE2`: thousands of 1-byte reads — the ZIP central
-    directory parser (matches filenames byte by byte).
-  - RVA `0xDD42`: ~12,000 chunked reads (up to 16 KB each, ~120 MB
-    total) — the generic buffered zlib/deflate decompression reader,
-    shared by every resource type, not audio-specific.
+  fired constantly, but only from **two** call sites for the entire
+  session, neither audio-specific (the ZIP central directory parser and
+  the generic buffered zlib/deflate decompression reader shared by
+  every resource type).
 
-Following the call chain one level up from `FUN_140140030` didn't reach
-a file read either:
+Following the call chain one level up from `FUN_140140030`
+(registration/cache only - see §4) didn't reach a file read either:
 ```
 FUN_140140030 → FUN_140140100 (cache check) / FUN_140140280 (slot alloc)
 FUN_1402cfeb0 (a per-room "clone" of FUN_14021de90, e.g. for rm10/bin)
@@ -256,13 +266,27 @@ FUN_1402cfeb0 (a per-room "clone" of FUN_14021de90, e.g. for rm10/bin)
      delegates to FUN_1402cfb40 - not traced further)
 ```
 
-**Conclusion:** wave bank data is very likely resolved through an
-in-memory index/offset table built once at boot (from the ZIP central
-directory already parsed for the `"./disc"` handle), rather than through
-any of the name-based resolvers this loader hooks. Redirecting audio
-would require locating and hooking that index structure directly (or
-patching the zip's central directory in memory), which is a
-substantially different — and unexplored — approach. **Not implemented.**
+**This investigation was a dead end, but turned out to be unnecessary.**
+`.xwb` wave bank files are confirmed working through the mod loader's
+existing `ResolveGeneric` hook (`FUN_14012df60`, §3) with no extra code
+needed - `[OK]` redirects were observed in testing for several multi-
+megabyte `.xwb` files (matching the original wave banks' real sizes),
+indistinguishable from any other `ResolveGeneric`-covered resource.
+
+The likely explanation: `FUN_140140030`'s registration only queues a
+request; the actual read is deferred until the track is genuinely
+needed for playback, and evidently happens through some caller of
+`FUN_14012df60` that was never specifically identified (a full
+`References to FUN_14012df60` listing - checking *every* caller, not
+just the ones reached by following the `illust`/`logo` string trail -
+was never done; see §8 for the technique that would find it). Short
+test sessions earlier in the investigation likely never reached that
+deferred read, which is why the `CreateFileA`-family probing came up
+empty: it was probing before the real read had a chance to happen, not
+because the read uses a fundamentally different mechanism.
+
+**Status: moddable, same as any other `ResolveGeneric` resource** - no
+further action needed.
 
 ---
 
