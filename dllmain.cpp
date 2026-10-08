@@ -24,6 +24,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <vector>
 #include <MinHook.h>
 
 // ----------------------------------------------------------------------
@@ -140,8 +141,8 @@ typedef unsigned int(__fastcall* fnResolveDiscResource)(long long param_1);
 static fnResolveDiscResource original_ResolveDiscResource = nullptr;
 
 static const uintptr_t RVA_ResolveDiscResource = 0x21de90; // FUN_14021de90
-static const uintptr_t RVA_PonteiroBaseBuffer  = 0x9ca7e8; // DAT_1409ca7e8
-static const uintptr_t OFFSET_BufferRecurso    = 0x629000;
+static const uintptr_t RVA_PonteiroBaseBuffer = 0x9ca7e8; // DAT_1409ca7e8
+static const uintptr_t OFFSET_BufferRecurso = 0x629000;
 
 static bool TryReadModFile_Buffer(const char* resourceName, unsigned int* outSize)
 {
@@ -149,7 +150,7 @@ static bool TryReadModFile_Buffer(const char* resourceName, unsigned int* outSiz
     BuildModPath(resourceName, modPath, sizeof(modPath));
 
     HANDLE hFile = CreateFileA(modPath, GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile == INVALID_HANDLE_VALUE)
         return false; // no mod for this resource - fall through to normal flow
 
@@ -173,7 +174,7 @@ static bool TryReadModFile_Buffer(const char* resourceName, unsigned int* outSiz
     if (!ok || bytesRead != (DWORD)fileSize.QuadPart)
     {
         LogModRedirect("[FAIL] \"%s\" error while reading (read=%lu, expected=%lld)\n",
-                        modPath, bytesRead, (long long)fileSize.QuadPart);
+            modPath, bytesRead, (long long)fileSize.QuadPart);
         return false;
     }
 
@@ -214,13 +215,13 @@ static unsigned int __fastcall Hooked_ResolveDiscResource(long long param_1)
 // ----------------------------------------------------------------------
 
 typedef LPVOID(__fastcall* fnResolveGeneric)(char* param_1, LPVOID param_2, DWORD* param_3);
-typedef void*(__fastcall* fnEngineAlloc)(long long size);
+typedef void* (__fastcall* fnEngineAlloc)(long long size);
 
 static fnResolveGeneric original_ResolveGeneric = nullptr;
 static fnEngineAlloc g_engineAlloc = nullptr;
 
 static const uintptr_t RVA_ResolveGeneric = 0x12df60; // FUN_14012df60
-static const uintptr_t RVA_EngineAlloc    = 0x13a3a0; // FUN_14013a3a0
+static const uintptr_t RVA_EngineAlloc = 0x13a3a0; // FUN_14013a3a0
 
 static LPVOID __fastcall Hooked_ResolveGeneric(char* param_1, LPVOID param_2, DWORD* param_3)
 {
@@ -241,7 +242,7 @@ static LPVOID __fastcall Hooked_ResolveGeneric(char* param_1, LPVOID param_2, DW
         BuildModPath(resourceName, modPath, sizeof(modPath));
 
         HANDLE hFile = CreateFileA(modPath, GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hFile != INVALID_HANDLE_VALUE)
         {
             LARGE_INTEGER fileSize;
@@ -270,7 +271,7 @@ static LPVOID __fastcall Hooked_ResolveGeneric(char* param_1, LPVOID param_2, DW
                     {
                         if (param_3 != nullptr) *param_3 = bytesRead;
                         LogModRedirect("[OK] \"%s\" <- \"%s\" (%lu bytes)\n",
-                                       resourceName, modPath, bytesRead);
+                            resourceName, modPath, bytesRead);
                         return buffer;
                     }
                     LogModRedirect("[FAIL] \"%s\" error while reading\n", modPath);
@@ -335,7 +336,7 @@ static LPVOID __fastcall Hooked_ResolveGeneric(char* param_1, LPVOID param_2, DW
             BuildModPath(resourceName, modPath, sizeof(modPath));
 
             HANDLE hFile = CreateFileA(modPath, GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
             if (hFile != INVALID_HANDLE_VALUE)
             {
                 LARGE_INTEGER modSize;
@@ -424,7 +425,7 @@ static long long __fastcall Hooked_EngineDiscRead(
         BuildModPath(resourceName, modPath, sizeof(modPath));
 
         HANDLE hFile = CreateFileA(modPath, GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hFile != INVALID_HANDLE_VALUE)
         {
             LARGE_INTEGER fileSize;
@@ -441,7 +442,7 @@ static long long __fastcall Hooked_EngineDiscRead(
                     {
                         if (param_4 != nullptr) *param_4 = (int)bytesRead;
                         LogModRedirect("[OK-LOWLEVEL] \"%s\" <- \"%s\" (%lu bytes)\n",
-                                       resourceName, modPath, bytesRead);
+                            resourceName, modPath, bytesRead);
                         return (long long)buffer;
                     }
                     LogModRedirect("[FAIL] \"%s\" error while reading (low-level)\n", modPath);
@@ -469,21 +470,54 @@ static long long __fastcall Hooked_EngineDiscRead(
             BuildModPath(resourceName, modPath, sizeof(modPath));
 
             HANDLE hFile = CreateFileA(modPath, GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
             if (hFile != INVALID_HANDLE_VALUE)
             {
                 LARGE_INTEGER modSize;
-                if (GetFileSizeEx(hFile, &modSize) && modSize.QuadPart > 0 &&
-                    (int)modSize.QuadPart <= originalSize)
+                // The fixed resource buffer is DAT_1409ca7e8 + 0x629000, inside a 0x1600000
+                // byte block allocated by FUN_14021c850. That leaves 0xFD7000 bytes (~15.8 MiB)
+                // at most; other sub-buffers might live in that range, so stay conservative
+                // at 4 MiB (the biggest known file loaded there is ~350 KB).
+                // Any other buffer must not grow.
+                uintptr_t modBase = (uintptr_t)GetModuleHandleA(nullptr);
+                uintptr_t modFixedBuf = *(uintptr_t*)(modBase + RVA_PonteiroBaseBuffer) + OFFSET_BufferRecurso;
+                const bool isFixedBuf = ((uintptr_t)param_3 == modFixedBuf);
+                const long long MAX_GROW_FIXED = 0x400000; // 4 MiB
+
+                bool sizeOk = false;
+                if (GetFileSizeEx(hFile, &modSize) && modSize.QuadPart > 0)
+                {
+                    sizeOk = modSize.QuadPart <= originalSize ||
+                             (isFixedBuf && modSize.QuadPart <= MAX_GROW_FIXED);
+                    if (!sizeOk)
+                        LogModRedirect("[FAIL] \"%s\" skipped: mod is %lld bytes, original is %d and this buffer cannot grow\n",
+                                       modPath, (long long)modSize.QuadPart, originalSize);
+                }
+                if (sizeOk)
                 {
                     DWORD bytesRead = 0;
-                    BOOL ok = ReadFile(hFile, (LPVOID)param_3, (DWORD)modSize.QuadPart, &bytesRead, nullptr);
+                    std::vector<unsigned char> modData((size_t)modSize.QuadPart);
+                    BOOL ok = ReadFile(hFile, modData.data(), (DWORD)modSize.QuadPart, &bytesRead, nullptr);
                     if (ok && bytesRead == (DWORD)modSize.QuadPart)
                     {
+                        // DIAGNOSTIC: compare against what the game just received.
+                        const unsigned char* orig = (const unsigned char*)param_3;
+                        size_t diff = 0;
+                        size_t cmpLen = (size_t)bytesRead < (size_t)originalSize ? bytesRead : (size_t)originalSize;
+                        for (size_t i = 0; i < cmpLen; i++) if (orig[i] != modData[i]) diff++;
+
+                        uintptr_t base = (uintptr_t)GetModuleHandleA(nullptr);
+                        uintptr_t fixedBuf = *(uintptr_t*)(base + RVA_PonteiroBaseBuffer) + OFFSET_BufferRecurso;
+                        uintptr_t callerRva = (uintptr_t)_ReturnAddress() - base;
+
+                        memcpy((void*)param_3, modData.data(), bytesRead);
                         *param_4 = (int)bytesRead;
                         LogModRedirect(
-                            "[OK-LOWLEVEL-BUFFERED] \"%s\" <- \"%s\" (%lu bytes, original was %d)\n",
-                            resourceName, modPath, bytesRead, originalSize);
+                            "[OK-LOWLEVEL-BUFFERED] \"%s\" <- \"%s\" (%lu bytes, original was %d) "
+                            "[bytesDifferent=%zu, dest=%s, callerRVA=0x%llx, thread=%lu]\n",
+                            resourceName, modPath, bytesRead, originalSize,
+                            diff, ((uintptr_t)param_3 == fixedBuf) ? "fixedBuffer" : "other",
+                            (unsigned long long)callerRva, GetCurrentThreadId());
                     }
                     else
                     {
@@ -559,16 +593,16 @@ static void InstallHooks()
     g_engineAlloc = (fnEngineAlloc)(base + RVA_EngineAlloc);
 
     InstallOneHook(base, RVA_ResolveDiscResource,
-                   &Hooked_ResolveDiscResource, (void**)&original_ResolveDiscResource);
+        &Hooked_ResolveDiscResource, (void**)&original_ResolveDiscResource);
 
     InstallOneHook(base, RVA_ResolveGeneric,
-                   (void*)&Hooked_ResolveGeneric, (void**)&original_ResolveGeneric);
+        (void*)&Hooked_ResolveGeneric, (void**)&original_ResolveGeneric);
 
     InstallOneHook(base, RVA_EngineDiscRead,
-                   (void*)&Hooked_EngineDiscRead, (void**)&original_EngineDiscRead);
+        (void*)&Hooked_EngineDiscRead, (void**)&original_EngineDiscRead);
 
     InstallOneHook(base, RVA_LoadMM8Audio,
-                   &Hooked_LoadMM8Audio, (void**)&original_LoadMM8Audio);
+        &Hooked_LoadMM8Audio, (void**)&original_LoadMM8Audio);
 }
 
 // ----------------------------------------------------------------------
